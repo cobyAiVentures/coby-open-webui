@@ -329,6 +329,7 @@ def load_speech_pipeline(request):
 @router.post("/speech")
 async def speech(request: Request, user=Depends(get_verified_user)):
     body = await request.body()
+    log.info(f"TTS request received. Engine: {request.app.state.config.TTS_ENGINE}, Model: {request.app.state.config.TTS_MODEL}")
     name = hashlib.sha256(
         body
         + str(request.app.state.config.TTS_ENGINE).encode("utf-8")
@@ -340,11 +341,13 @@ async def speech(request: Request, user=Depends(get_verified_user)):
 
     # Check if the file already exists in the cache
     if file_path.is_file():
-        return FileResponse(file_path)
+        log.info(f"Returning cached TTS file: {file_path}")
+        return FileResponse(file_path, media_type="audio/mpeg")
 
     payload = None
     try:
         payload = json.loads(body.decode("utf-8"))
+        log.info(f"TTS payload: input length={len(payload.get('input', ''))}, voice={payload.get('voice', 'N/A')}")
     except Exception as e:
         log.exception(e)
         raise HTTPException(status_code=400, detail="Invalid JSON payload")
@@ -561,6 +564,175 @@ async def speech(request: Request, user=Depends(get_verified_user)):
             await f.write(json.dumps(payload))
 
         return FileResponse(file_path)
+
+    elif request.app.state.config.TTS_ENGINE == "piper":
+        log.info("Processing TTS request with Piper engine")
+        payload = None
+        try:
+            payload = json.loads(body.decode("utf-8"))
+            log.info(f"Piper TTS payload received: input='{payload.get('input', '')[:50]}...'")
+        except Exception as e:
+            log.exception(e)
+            raise HTTPException(status_code=400, detail="Invalid JSON payload")
+
+        try:
+            log.info(f"Loading Piper voice. Model: {request.app.state.config.TTS_MODEL}, Voice: {request.app.state.config.TTS_VOICE}")
+            from piper import PiperVoice
+            from piper import download_voices
+            import io
+            import os
+            import wave
+            import numpy as np
+            from pathlib import Path
+
+            # Get model/voice from config
+            # TTS_MODEL can be a voice name like "en_US-lessac-medium" or a path to a .onnx file
+            model_name = (request.app.state.config.TTS_MODEL or "en_US-lessac-medium").strip()
+            voice_path = (request.app.state.config.TTS_VOICE or "").strip() or None
+            
+            log.info(f"Piper TTS - Model name from config: '{model_name}' (length: {len(model_name)})")
+            if len(model_name) < 10:
+                log.warning(f"Model name seems too short, might be truncated. Full config value: '{request.app.state.config.TTS_MODEL}'")
+
+            # Load voice model
+            if voice_path and os.path.exists(voice_path):
+                # Use provided voice path (should be path to .onnx file)
+                onnx_path = Path(voice_path)
+                config_path = onnx_path.with_suffix('.onnx.json')
+                if config_path.exists():
+                    voice = PiperVoice.load(str(onnx_path), str(config_path))
+                else:
+                    voice = PiperVoice.load(str(onnx_path))
+            elif model_name and os.path.exists(model_name) and model_name.endswith('.onnx'):
+                # Model name is actually a path to .onnx file
+                onnx_path = Path(model_name)
+                config_path = onnx_path.with_suffix('.onnx.json')
+                if config_path.exists():
+                    voice = PiperVoice.load(str(onnx_path), str(config_path))
+                else:
+                    voice = PiperVoice.load(str(onnx_path))
+            else:
+                # Try to find/download voice by name
+                try:
+                    # Default download directory is typically ~/.local/share/piper/voices
+                    from pathlib import Path as PathLib
+                    download_dir = PathLib(os.path.expanduser("~/.local/share/piper/voices"))
+                    download_dir.mkdir(parents=True, exist_ok=True)
+                    
+                    # Construct expected voice path: ~/.local/share/piper/voices/{model_name}/model.onnx
+                    voice_dir = download_dir / model_name
+                    onnx_path = voice_dir / "model.onnx"
+                    config_path = voice_dir / "model.onnx.json"
+                    
+                    # Check if voice exists locally
+                    if onnx_path.exists():
+                        if config_path.exists():
+                            voice = PiperVoice.load(str(onnx_path), str(config_path))
+                        else:
+                            voice = PiperVoice.load(str(onnx_path))
+                    else:
+                        # Try to download the voice
+                        log.info(f"Voice '{model_name}' not found locally, attempting to download...")
+                        # Validate model name before attempting download
+                        if len(model_name) < 10:
+                            raise HTTPException(
+                                status_code=400,
+                                detail=f"Model name '{model_name}' appears to be truncated or invalid. Please check your TTS_MODEL configuration in Admin Settings. Expected format: 'en_US-lessac-medium'"
+                            )
+                        try:
+                            log.info(f"Downloading voice '{model_name}' to {download_dir}...")
+                            download_voices.download_voice(model_name, download_dir)
+                            log.info(f"Download completed. Checking for files...")
+                            # After download, try to load again
+                            if onnx_path.exists():
+                                log.info(f"Found ONNX file at {onnx_path}")
+                                if config_path.exists():
+                                    log.info(f"Found config file at {config_path}")
+                                    voice = PiperVoice.load(str(onnx_path), str(config_path))
+                                else:
+                                    log.warning(f"Config file not found, loading without config")
+                                    voice = PiperVoice.load(str(onnx_path))
+                                log.info(f"Voice loaded successfully")
+                            else:
+                                # Check if files were downloaded to a different location
+                                log.error(f"ONNX file not found at expected path: {onnx_path}")
+                                # List what was actually downloaded
+                                if voice_dir.exists():
+                                    log.error(f"Voice directory exists. Contents: {list(voice_dir.iterdir())}")
+                                raise HTTPException(
+                                    status_code=400,
+                                    detail=f"Voice model '{model_name}' not found after download. Please download it manually using: python -m piper.download_voices --model {model_name}"
+                                )
+                        except HTTPException:
+                            raise
+                        except Exception as download_error:
+                            log.exception(download_error)
+                            raise HTTPException(
+                                status_code=400,
+                                detail=f"Failed to download voice '{model_name}': {str(download_error)}. Please download it manually using: python -m piper.download_voices --model {model_name}"
+                            )
+                except Exception as e:
+                    log.exception(e)
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Failed to load voice '{model_name}': {str(e)}. Please ensure the voice is downloaded or provide a valid voice path."
+                    )
+
+            # Generate speech
+            text = payload.get("input", "")
+            if not text:
+                raise HTTPException(status_code=400, detail="No text provided")
+
+            # Use synthesize which returns AudioChunk iterable
+            audio_chunks = []
+            sample_rate = None
+            for audio_chunk in voice.synthesize(text):
+                if sample_rate is None:
+                    sample_rate = audio_chunk.sample_rate
+                audio_chunks.append(audio_chunk.audio)
+
+            # Concatenate all audio chunks
+            if not audio_chunks:
+                raise HTTPException(status_code=500, detail="No audio generated from Piper TTS")
+
+            audio_array = np.concatenate(audio_chunks)
+            
+            # Normalize audio to 16-bit PCM range
+            audio_int16 = (audio_array * 32767).astype(np.int16)
+
+            # Write to temporary WAV file, then convert to MP3
+            temp_wav_path = file_path.with_suffix('.wav')
+            with wave.open(str(temp_wav_path), 'wb') as wav_file:
+                wav_file.setnchannels(1)  # Mono
+                wav_file.setsampwidth(2)  # 16-bit
+                wav_file.setframerate(sample_rate)
+                wav_file.writeframes(audio_int16.tobytes())
+
+            # Convert WAV to MP3 using pydub
+            from pydub import AudioSegment
+            audio_segment = AudioSegment.from_wav(str(temp_wav_path))
+            audio_segment.export(file_path, format="mp3")
+            
+            # Clean up temp WAV file
+            if temp_wav_path.exists():
+                os.remove(temp_wav_path)
+
+            async with aiofiles.open(file_body_path, "w") as f:
+                await f.write(json.dumps(payload))
+
+            return FileResponse(file_path, media_type="audio/mpeg")
+
+        except ImportError:
+            raise HTTPException(
+                status_code=500,
+                detail="Piper TTS is not installed. Please install it with: pip install piper-tts"
+            )
+        except Exception as e:
+            log.exception(e)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Piper TTS error: {str(e)}"
+            )
 
 
 def transcription_handler(request, file_path, metadata, user=None):

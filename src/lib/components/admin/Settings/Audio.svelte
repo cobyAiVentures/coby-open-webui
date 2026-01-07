@@ -517,6 +517,9 @@
 								if (e.target?.value === 'openai') {
 									TTS_VOICE = 'alloy';
 									TTS_MODEL = 'tts-1';
+								} else if (e.target?.value === 'piper') {
+									TTS_VOICE = '';
+									TTS_MODEL = 'en_US-lessac-medium';
 								} else {
 									TTS_VOICE = '';
 									TTS_MODEL = '';
@@ -525,6 +528,7 @@
 						>
 							<option value="">{$i18n.t('Web API')}</option>
 							<option value="transformers">{$i18n.t('Transformers')} ({$i18n.t('Local')})</option>
+							<option value="piper">{$i18n.t('Piper')} ({$i18n.t('Local')})</option>
 							<option value="openai">{$i18n.t('OpenAI')}</option>
 							<option value="elevenlabs">{$i18n.t('ElevenLabs')}</option>
 							<option value="azure">{$i18n.t('Azure AI Speech')}</option>
@@ -607,6 +611,30 @@
 										{/each}
 									</select>
 								</div>
+							</div>
+						</div>
+					{:else if TTS_ENGINE === 'piper'}
+						<div>
+							<div class=" mb-1.5 text-xs font-medium">{$i18n.t('Piper Voice Model')}</div>
+							<div class="flex w-full">
+								<div class="flex-1">
+									<input
+										class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+										bind:value={TTS_MODEL}
+										placeholder={$i18n.t('e.g., en_US-lessac-medium or path to .onnx file')}
+									/>
+								</div>
+							</div>
+							<div class="mt-2 mb-1 text-xs text-gray-400 dark:text-gray-500">
+								{$i18n.t(`Enter a Piper voice model name (e.g., en_US-lessac-medium) or a path to a .onnx voice file. Models will be downloaded automatically if not found.`)}
+							</div>
+							<div class="mt-1 mb-1 text-xs text-gray-400 dark:text-gray-500">
+								<a
+									href="https://github.com/rhasspy/piper/releases"
+									target="_blank"
+									class="underline"
+									>{$i18n.t('Browse available voices')}</a
+								>
 							</div>
 						</div>
 					{:else if TTS_ENGINE === 'transformers'}

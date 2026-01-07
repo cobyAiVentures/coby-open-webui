@@ -458,6 +458,7 @@
 
 	const fetchAudio = async (content) => {
 		if (!audioCache.has(content)) {
+			console.log('CallOverlay: Fetching audio for content:', content.substring(0, 50) + '...');
 			try {
 				// Set the emoji for the content if needed
 				if ($settings?.showEmojiInCall ?? false) {
@@ -532,15 +533,22 @@
 							console.log(
 								'%c%s',
 								'color: red; font-size: 20px;',
-								`Playing audio for content: ${content}`
+								`Playing audio for content: ${content.substring(0, 50)}`
 							);
 
 							const audio = audioCache.get(content);
-							await playAudio(audio); // Here ensure that playAudio is indeed correct method to execute
-							console.log(`Played audio for content: ${content}`);
+							if (!audio || audio === null) {
+								console.error('CallOverlay: Audio is null or invalid for content:', content.substring(0, 50));
+								// Don't re-queue, just skip this content
+								await new Promise((resolve) => setTimeout(resolve, 200));
+								continue;
+							}
+							await playAudio(audio);
+							console.log(`CallOverlay: Played audio for content: ${content.substring(0, 50)}`);
 							await new Promise((resolve) => setTimeout(resolve, 200)); // Wait before retrying to reduce tight loop
 						} catch (error) {
-							console.error('Error playing audio:', error);
+							console.error('CallOverlay: Error playing audio:', error);
+							toast.error(`TTS Playback Error: ${error?.message || error}`);
 						}
 					} else {
 						await speakSpeechSynthesisHandler(content);

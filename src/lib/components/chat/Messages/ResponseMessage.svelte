@@ -208,6 +208,9 @@
 		speaking = true;
 		const content = removeAllDetails(message.content);
 
+		console.log('TTS Engine config:', $config.audio.tts.engine);
+		console.log('TTS Settings engine:', $settings?.audio?.tts?.engine);
+
 		if ($config.audio.tts.engine === '') {
 			let voices = [];
 			const getVoicesLoop = setInterval(() => {
@@ -244,6 +247,7 @@
 				}
 			}, 100);
 		} else {
+			console.log('Using backend TTS engine:', $config.audio.tts.engine);
 			$audioQueue.setId(`${message.id}`);
 			$audioQueue.setPlaybackRate($settings.audio?.tts?.playbackRate ?? 1);
 			$audioQueue.onStopped = () => {
@@ -298,7 +302,9 @@
 					}
 				}
 			} else {
+				console.log('Calling backend TTS API for', messageContentParts.length, 'sentence(s)');
 				for (const [idx, sentence] of messageContentParts.entries()) {
+					console.log(`Synthesizing sentence ${idx + 1}/${messageContentParts.length}`);
 					const res = await synthesizeOpenAISpeech(
 						localStorage.token,
 						$settings?.audio?.tts?.defaultVoice === $config.audio.tts.voice
@@ -306,8 +312,8 @@
 							: $config?.audio?.tts?.voice,
 						sentence
 					).catch((error) => {
-						console.error(error);
-						toast.error(`${error}`);
+						console.error('TTS synthesis error:', error);
+						toast.error(`TTS Error: ${error?.detail || error?.message || error}`);
 
 						speaking = false;
 						loadingSpeech = false;
